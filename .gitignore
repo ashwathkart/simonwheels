@@ -1,5 +1,6 @@
 /assets
 /kitti360
-/__pychache__
+/__pycache__
 /misc
 /outputs
+/ros_sequences
