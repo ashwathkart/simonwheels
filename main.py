@@ -1,7 +1,8 @@
 from argparse import Namespace
 import os
 from re import X
-
+import rospy
+import threading
 import glm
 import pygame as pg
 from constants import SHADOW_CONTRAST
@@ -11,8 +12,10 @@ import moderngl as mgl
 import numpy as np
 import moderngl_window as mglw
 from dataloader import DataLoader
+from datareader import DataReader
 from models.scenarios import *
 from misc.canvas import Background
+USING_ROS = False
 DEBUG = True
 USE_SUNLIGHT_DIR = False
 DEFAULT_ARGS = Namespace(
@@ -68,6 +71,14 @@ class HIL_rendering(mglw.WindowConfig):
                 sun_direction = Light.get_sunlight_direction(self.dataloader.start_timestamp)
                 self.config.light_config.direction = sun_direction
                 self.light = Light(**self.config.light_config)
+
+        else:
+            self.dataloader = DataReader(debug=DEBUG, window_size=self.window_size)
+            if USE_SUNLIGHT_DIR:
+                sun_direction = Light.get_sunlight_direction(self.dataloader.start_timestamp)
+                self.config.light_config.direction = sun_direction
+                self.light = Light(**self.config.light_config)
+
         self.sensor_data = None
         # TODO: only necessary for visualization purpose. can be commented out during production mode
         self.background = Background(self)
@@ -179,6 +190,11 @@ class HIL_rendering(mglw.WindowConfig):
             while self.dataloader.timestamps[self.dataloader.i] < time:
                 self.dataloader.i += 1
             self.sensor_data = next(self.dataloader)
+        else:
+            # Check if sensor_data is ready (i.e., not None)
+            if not self.sensor_data:
+                print("Waiting for sensor data...")
+                return  # Skip rendering if no data is available yet
 
         self.render_single_frame(
             self.sensor_data
@@ -188,6 +204,7 @@ class HIL_rendering(mglw.WindowConfig):
             self.clock.tick(24)
 
         print('frame {}, FPS = {}, time: {}, rostime: {}'.format(self.i, self.i / time, time, self.dataloader.timestamps[self.dataloader.i]))
+
 
     def take_screenshot(self):
         return Image.frombytes('RGB', self.window_size, self.wnd.fbo.read(), 'raw', 'RGB', 0, -1) #.show()
@@ -290,7 +307,7 @@ def custom_run_window_config(config_cls: mglw.WindowConfig, values: Namespace, t
         timer: A custom timer instance
         args: Override sys.args
     """
-    using_ros = False
+    using_ros = USING_ROS
     custom_config = OmegaConf.load(config_path)
     window, config_obj, timer = setup_window_config(config_cls, values, using_ros, custom_config)
 
@@ -314,7 +331,36 @@ def custom_run_window_config(config_cls: mglw.WindowConfig, values: Namespace, t
 def ros_custom_run(config_cls: mglw.WindowConfig):
     custom_run_window_config(config_cls, DEFAULT_ARGS)
 
+def ros_spin_thread():
+    rospy.spin()
+
+def main():
+    # Initialize the ROS node
+    rospy.init_node('hil_rendering_node', anonymous=True)
+
+    # Load configuration
+    using_ros = True  # Set to True to use ROS
+    custom_config = OmegaConf.load(config_path)
+    config_cls = HIL_rendering
+
+    # Start ROS spinning in a background thread
+    if using_ros:
+        threading.Thread(target=ros_spin_thread, daemon=True).start()
+
+    # Initialize the ROS window and configuration
+    window, config_obj, timer = setup_window_config(config_cls, DEFAULT_ARGS, using_ros, custom_config)
+
+    # Start the main loop if not using ROS spin
+    timer.start()
+    while not window.is_closing:
+        current_time, delta = timer.next_frame()
+        window.render(current_time, delta)
+        if not window.is_closing:
+            window.swap_buffers()
+    cleanup_window_config(window, timer)
+
 if __name__ == '__main__':
+    main()
     os.makedirs(os.path.join(data_root, 'outputs'), exist_ok=True)
     config_cls = HIL_rendering
     parser = mglw.create_parser()
